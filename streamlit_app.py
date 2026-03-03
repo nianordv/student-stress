@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -86,16 +87,19 @@ page = st.sidebar.selectbox(
 )
 
 # ── Load data ─────────────────────────────────────────────────────────────────
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 @st.cache_data
 def load_survey():
-    df = pd.read_csv("/mnt/user-data/uploads/Stress_Dataset.csv")
+    path = os.path.join(BASE_DIR, "Stress_Dataset.csv")
+    df = pd.read_csv(path)
     df.columns = df.columns.str.strip()
     return df
 
 @st.cache_data
 def load_numeric():
-    df = pd.read_csv("/mnt/user-data/uploads/StressLevelDataset.csv")
-    return df
+    path = os.path.join(BASE_DIR, "StressLevelDataset.csv")
+    return pd.read_csv(path)
 
 survey_df = load_survey()
 numeric_df = load_numeric()
