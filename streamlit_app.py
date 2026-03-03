@@ -454,108 +454,188 @@ elif page == "Insights 🔍":
 # PAGE 4 — Prediction
 # ─────────────────────────────────────────────────────────────────────────────
 elif page == "Prediction 🤖":
-    st.title("🤖 Stress Level Prediction")
-    st.markdown(f'<p style="color:{SUBTEXT}!important;">Train a classifier to predict <b>Stress Level / Type</b> from student features.</p>', unsafe_allow_html=True)
+    st.title("🤖 Prediction with Linear Regression")
+    st.markdown(
+        f'<p style="color:{SUBTEXT}!important;">This page trains a <b>Linear Regression</b> model (Scikit-Learn) to predict a key numeric variable and support decision-making.</p>',
+        unsafe_allow_html=True
+    )
 
-    from sklearn.preprocessing import LabelEncoder
-    from sklearn.model_selection import train_test_split, cross_val_score
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-    from sklearn.svm import SVC
+    from sklearn.model_selection import train_test_split
+    from sklearn.compose import ColumnTransformer
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import OneHotEncoder
+    from sklearn.impute import SimpleImputer
+    from sklearn.linear_model import LinearRegression
     from sklearn import metrics
 
-    df2 = df.drop(columns=["Stress_Short"], errors="ignore").copy()
-    # Encode categoricals
-    for col_name in df2.select_dtypes(exclude=np.number).columns:
-        if col_name != target_col:
-            df2[col_name] = LabelEncoder().fit_transform(df2[col_name].astype(str))
+    # ----- Choose dataset + target -----
+    if use_survey:
+        st.info("Survey dataset selected. Linear Regression needs a NUMERIC target.")
+        # Pick a numeric target from the survey dataset
+        survey_numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
 
-    le = LabelEncoder()
-    df2["__target__"] = le.fit_transform(df2[target_col].astype(str))
-    df2 = df2.drop(columns=[target_col])
+        # remove obvious IDs if present (safe)
+        survey_numeric_cols = [c for c in survey_numeric_cols if c.lower() not in ["id", "index"]]
 
-    all_features = [c for c in df2.columns if c != "__target__"]
+        if len(survey_numeric_cols) == 0:
+            st.error("No numeric columns found in the survey dataset. Please switch to the Numeric Dataset.")
+            st.stop()
 
+        target = st.selectbox("Select a numeric target to predict (Y)", survey_numeric_cols)
+
+    else:
+        # Numeric dataset has many numeric columns; let user choose target
+        numeric_targets = df.select_dtypes(include=np.number).columns.tolist()
+        if len(numeric_targets) == 0:
+            st.error("No numeric columns found. Cannot run Linear Regression.")
+            st.stop()
+
+        # Good default: predict anxiety from other lifestyle indicators (societal value)
+        default_target = "anxiety_level" if "anxiety_level" in numeric_targets else numeric_targets[0]
+        target = st.selectbox("Select a numeric target to predict (Y)", numeric_targets, index=numeric_targets.index(default_target))
+
+    # ----- Build X / y -----
+    data = df.copy()
+
+    # Drop helper columns
+    data = data.drop(columns=["Stress_Short"], errors="ignore")
+
+    # Remove rows missing the target
+    data = data.dropna(subset=[target])
+
+    X_all = data.drop(columns=[target], errors="ignore")
+    y_all = data[target].astype(float)
+
+    # Feature selection UI
+    all_features = X_all.columns.tolist()
     features_sel = st.sidebar.multiselect("Select Features (X)", all_features, default=all_features)
-    model_choice = st.sidebar.selectbox("Model", ["Logistic Regression", "Random Forest", "Gradient Boosting", "SVM"])
-    test_size    = st.sidebar.slider("Test Split %", 10, 40, 20)
 
-    X = df2[features_sel]
-    y = df2["__target__"]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size/100, random_state=42, stratify=y)
+    if len(features_sel) == 0:
+        st.warning("Please select at least 1 feature.")
+        st.stop()
 
-    models = {
-        "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
-        "Random Forest": RandomForestClassifier(n_estimators=150, random_state=42, n_jobs=-1),
-        "Gradient Boosting": GradientBoostingClassifier(n_estimators=100, random_state=42),
-        "SVM": SVC(random_state=42),
-    }
+    X = X_all[features_sel].copy()
+    y = y_all.copy()
 
-    if st.button("🚀 Train Model"):
-        with st.spinner(f"Training {model_choice}..."):
-            mdl = models[model_choice]
-            mdl.fit(X_train, y_train)
-            preds = mdl.predict(X_test)
-            acc   = metrics.accuracy_score(y_test, preds)
-            f1    = metrics.f1_score(y_test, preds, average="weighted")
-            prec  = metrics.precision_score(y_test, preds, average="weighted", zero_division=0)
+    # Train/test split
+    test_size = st.sidebar.slider("Test Split %", 10, 40, 20)
 
-        st.success(f"✅ {model_choice} trained successfully!")
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y,
+        test_size=test_size / 100,
+        random_state=42
+    )
+
+    # ----- Preprocessing (leakage-safe) -----
+    num_features = X_train.select_dtypes(include=np.number).columns.tolist()
+    cat_features = [c for c in X_train.columns if c not in num_features]
+
+    numeric_transformer = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="median")),
+    ])
+
+    categorical_transformer = Pipeline(steps=[
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("onehot", OneHotEncoder(handle_unknown="ignore")),
+    ])
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_transformer, num_features),
+            ("cat", categorical_transformer, cat_features),
+        ],
+        remainder="drop"
+    )
+
+    # ----- Linear Regression model -----
+    model = LinearRegression()
+
+    reg = Pipeline(steps=[
+        ("preprocess", preprocessor),
+        ("model", model)
+    ])
+
+    # ----- Train + Evaluate -----
+    if st.button("🚀 Train Linear Regression"):
+        with st.spinner("Training Linear Regression..."):
+            reg.fit(X_train, y_train)
+            preds = reg.predict(X_test)
+
+            r2 = metrics.r2_score(y_test, preds)
+            mae = metrics.mean_absolute_error(y_test, preds)
+            rmse = np.sqrt(metrics.mean_squared_error(y_test, preds))
+
+        st.success("✅ Linear Regression trained successfully!")
 
         c1, c2, c3 = st.columns(3)
-        c1.metric("Accuracy", f"{acc:.3f}")
-        c2.metric("F1 Score (weighted)", f"{f1:.3f}")
-        c3.metric("Precision (weighted)", f"{prec:.3f}")
+        c1.metric("R²", f"{r2:.3f}")
+        c2.metric("MAE", f"{mae:.3f}")
+        c3.metric("RMSE", f"{rmse:.3f}")
 
-        # Confusion matrix
-        st.markdown('<div class="section-header">Confusion Matrix</div>', unsafe_allow_html=True)
-        cm = metrics.confusion_matrix(y_test, preds)
-        fig, ax = plt.subplots(figsize=(6, 4), facecolor=CARD)
+        # ----- Show prediction vs actual scatter -----
+        st.markdown('<div class="section-header">Predicted vs Actual</div>', unsafe_allow_html=True)
+        fig, ax = plt.subplots(figsize=(7, 5), facecolor=CARD)
         ax.set_facecolor(BG)
-        sns.heatmap(cm, annot=True, fmt="d",
-                    cmap=sns.light_palette(ACCENT1, as_cmap=True),
-                    ax=ax, linewidths=1, linecolor=BG,
-                    xticklabels=le.classes_, yticklabels=le.classes_,
-                    annot_kws={"size": 11, "color": BG, "fontweight": "bold"})
-        ax.set_xlabel("Predicted", color=SUBTEXT)
-        ax.set_ylabel("Actual", color=SUBTEXT)
+        ax.scatter(y_test, preds, alpha=0.55, s=20)
+        ax.set_xlabel("Actual", color=SUBTEXT)
+        ax.set_ylabel("Predicted", color=SUBTEXT)
+        ax.set_title(f"{target}: Actual vs Predicted", color=TEXT, fontsize=12, fontweight="bold")
+        for sp in ax.spines.values():
+            sp.set_color(BORDER)
         ax.tick_params(colors=SUBTEXT)
-        ax.set_title("Confusion Matrix", color=TEXT, fontsize=12, fontweight="bold")
         st.pyplot(fig)
 
-        # Classification report
-        with st.expander("📋 Full Classification Report"):
-            report = metrics.classification_report(y_test, preds, target_names=le.classes_, output_dict=True)
-            st.dataframe(pd.DataFrame(report).T.style.format("{:.3f}"), use_container_width=True)
+        # ----- Driving variables (coefficients) -----
+        st.markdown('<div class="section-header">Driving Variables (Model Coefficients)</div>', unsafe_allow_html=True)
 
-        # Feature Importance
-        if hasattr(mdl, "feature_importances_"):
-            st.markdown('<div class="section-header">Feature Importance</div>', unsafe_allow_html=True)
-            fi = pd.Series(mdl.feature_importances_, index=features_sel).sort_values(ascending=True).tail(15)
-            fig2, ax2 = plt.subplots(figsize=(9, max(4, len(fi)*0.4)), facecolor=CARD)
-            ax2.set_facecolor(BG)
-            norm = plt.Normalize(fi.values.min(), fi.values.max())
-            bar_colors = [plt.cm.cool(norm(v)) for v in fi.values]
-            ax2.barh(fi.index, fi.values, color=bar_colors, edgecolor=BG)
-            ax2.set_xlabel("Importance", color=SUBTEXT)
-            ax2.tick_params(colors=SUBTEXT)
-            for sp in ax2.spines.values(): sp.set_color(BORDER)
-            ax2.set_title("Top Feature Importances", color=TEXT, fontsize=12, fontweight="bold")
-            st.pyplot(fig2)
+        # Get feature names after preprocessing
+        preprocess_fitted = reg.named_steps["preprocess"]
 
-        elif hasattr(mdl, "coef_"):
-            st.markdown('<div class="section-header">Model Coefficients</div>', unsafe_allow_html=True)
-            if mdl.coef_.shape[0] == 1:
-                coef = pd.Series(mdl.coef_[0], index=features_sel).sort_values(ascending=True)
+        feature_names = []
+        feature_names.extend(num_features)
+
+        if len(cat_features) > 0:
+            ohe = preprocess_fitted.named_transformers_["cat"].named_steps["onehot"]
+            ohe_names = ohe.get_feature_names_out(cat_features).tolist()
+            feature_names.extend(ohe_names)
+
+        coefs = reg.named_steps["model"].coef_
+        coef_s = pd.Series(coefs, index=feature_names).sort_values(key=lambda s: s.abs(), ascending=False)
+
+        top_k = st.slider("Show top coefficients", 5, min(25, len(coef_s)), 12)
+        st.dataframe(coef_s.head(top_k).to_frame("Coefficient"), use_container_width=True)
+
+        # Optional coefficient bar chart
+        fig2, ax2 = plt.subplots(figsize=(9, max(4, top_k * 0.35)), facecolor=CARD)
+        ax2.set_facecolor(BG)
+        top = coef_s.head(top_k).sort_values()
+        ax2.barh(top.index, top.values, edgecolor=BG)
+        ax2.set_xlabel("Coefficient value", color=SUBTEXT)
+        ax2.set_title("Top Driving Variables", color=TEXT, fontsize=12, fontweight="bold")
+        ax2.tick_params(colors=SUBTEXT)
+        for sp in ax2.spines.values():
+            sp.set_color(BORDER)
+        st.pyplot(fig2)
+
+        # ----- Single prediction (user input) -----
+        st.markdown('<div class="section-header">Make a New Prediction</div>', unsafe_allow_html=True)
+        st.caption("Enter feature values to estimate the target using the trained model.")
+
+        input_data = {}
+        col1, col2 = st.columns(2)
+        for i, col_name in enumerate(features_sel):
+            if col_name in num_features:
+                # numeric input
+                default_val = float(X[col_name].median()) if pd.api.types.is_numeric_dtype(X[col_name]) else 0.0
+                widget_col = col1 if i % 2 == 0 else col2
+                input_data[col_name] = widget_col.number_input(col_name, value=default_val)
             else:
-                coef = pd.Series(np.abs(mdl.coef_).mean(axis=0), index=features_sel).sort_values(ascending=True)
-            fig2, ax2 = plt.subplots(figsize=(9, max(4, len(coef)*0.4)), facecolor=CARD)
-            ax2.set_facecolor(BG)
-            bar_colors = [ACCENT3 if v < 0 else ACCENT4 for v in coef.values]
-            ax2.barh(coef.index, coef.values, color=bar_colors, edgecolor=BG)
-            ax2.axvline(0, color=SUBTEXT, lw=0.8)
-            ax2.set_xlabel("Coefficient", color=SUBTEXT)
-            ax2.tick_params(colors=SUBTEXT)
-            for sp in ax2.spines.values(): sp.set_color(BORDER)
-            ax2.set_title("Model Coefficients", color=TEXT, fontsize=12, fontweight="bold")
-            st.pyplot(fig2)
+                # categorical input
+                opts = sorted(X[col_name].dropna().astype(str).unique().tolist())
+                widget_col = col1 if i % 2 == 0 else col2
+                input_data[col_name] = widget_col.selectbox(col_name, options=opts if opts else ["Unknown"])
+
+        if st.button("🎯 Predict"):
+            input_df = pd.DataFrame([input_data])
+            pred_value = reg.predict(input_df)[0]
+            st.success(f"Predicted **{target}**: **{pred_value:.3f}**")
