@@ -33,7 +33,7 @@ h1,h2,h3,h4 {{ font-family: 'Space Grotesk', sans-serif; }}
 
 [data-testid="stAppViewContainer"] {{ background: {BG}; }}
 [data-testid="stSidebar"]          {{ background: {CARD}; border-right: 1px solid {BORDER}; }}
-h1,h2,h3,h4,h5,h6,p,label,div,span {{ color: {TEXT} !important; }}
+h1,h2,h3,h4,h5,h6,p,label,span {{ color: {TEXT} !important; }}
 
 .metric-card {{
     background: {CARD};
